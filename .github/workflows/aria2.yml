@@ -3,7 +3,7 @@ name: Torrent Download & Smart Upload to Filemirage
 on:
   push:
     branches:
-      - Aria2
+      - '*'
   workflow_dispatch:
 
 jobs:
@@ -36,10 +36,6 @@ jobs:
 
           PAGE_URL = "https://equestria-eta.vercel.app/api/pages/dprjjMvC8fCF/raw"
           FILEMIRAGE_TOKEN = os.environ.get("FILEMIRAGE_API_TOKEN", "")
-
-          def zip_single_file(file_path, zip_output_path):
-              with zipfile.ZipFile(zip_output_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                  zipf.write(file_path, os.path.basename(file_path))
 
           def zip_files(file_paths, zip_output_path):
               with zipfile.ZipFile(zip_output_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
@@ -113,10 +109,12 @@ jobs:
                       non_series_files.append(fpath)
 
               final_upload_files = []
+              small_series_files = []
 
               # Process Series files
               for show_title, files in series_groups.items():
                   if len(files) > 3:
+                      # More than 3 files: Zip together into show-named zip
                       files.sort()
                       first_file_stem = os.path.splitext(os.path.basename(files[0]))[0]
                       zip_name = os.path.join(temp_dir, f"{first_file_stem}.zip")
@@ -124,12 +122,17 @@ jobs:
                       zip_files(files, zip_name)
                       final_upload_files.append(zip_name)
                   else:
-                      print(f"Series '{show_title}' has {len(files)} file(s) (<=3). Zipping individually with timestamp...")
-                      for idx, fpath in enumerate(files, start=1):
-                          timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                          zip_name = os.path.join(temp_dir, f"{timestamp}_{idx}.zip")
-                          zip_single_file(fpath, zip_name)
-                          final_upload_files.append(zip_name)
+                      # 3 or fewer files: Collect together to zip in a single timestamped archive
+                      print(f"Series '{show_title}' has {len(files)} file(s) (<=3). Adding to combined zip...")
+                      small_series_files.extend(files)
+
+              # Bundle all <=3 series files across all shows into ONE timestamped zip
+              if small_series_files:
+                  timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                  combined_zip_name = os.path.join(temp_dir, f"{timestamp}.zip")
+                  print(f"Zipping {len(small_series_files)} ungrouped series file(s) into single archive '{timestamp}.zip'...")
+                  zip_files(small_series_files, combined_zip_name)
+                  final_upload_files.append(combined_zip_name)
 
               # Process Non-Series files (uploaded normally unzipped)
               final_upload_files.extend(non_series_files)
