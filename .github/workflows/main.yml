@@ -50,6 +50,23 @@ jobs:
                   for fpath in file_paths:
                       zipf.write(fpath, os.path.basename(fpath))
 
+          def get_concise_zip_name(show_titles, temp_dir, max_len=55):
+              clean_titles = []
+              for t in show_titles:
+                  c = re.sub(r'[^a-zA-Z0-9]+', '_', t).strip('_')
+                  if c and c not in clean_titles:
+                      clean_titles.append(c)
+              
+              combined = "_".join(clean_titles)
+              if len(combined) > max_len:
+                  if len(clean_titles) > 1:
+                      combined = f"{clean_titles[0][:25]}_and_{len(clean_titles)-1}_more"
+                  else:
+                      combined = clean_titles[0][:max_len]
+              if not combined:
+                  combined = "bundle"
+              return os.path.join(temp_dir, f"{combined}.zip")
+
           def main():
               # 1. Create temporary directory
               temp_dir = tempfile.mkdtemp(prefix="torrent_download_")
@@ -104,7 +121,6 @@ jobs:
 
               print("\n\nAll downloads finished!")
 
-              # 4. Processing logic for Subfolders (>5 files) and Series (>3 files)
               final_upload_files = []
 
               # Step 4A: Check subdirectories for > 5 files
@@ -123,7 +139,7 @@ jobs:
                           final_upload_files.append(zip_name)
                           shutil.rmtree(full_path)
 
-              # Step 4B: Scan remaining files for TV Series patterns (>3 files)
+              # Step 4B: Scan remaining files
               remaining_files = []
               for root, _, files in os.walk(temp_dir):
                   for f in files:
@@ -131,9 +147,10 @@ jobs:
                       if fpath not in final_upload_files:
                           remaining_files.append(fpath)
 
-              series_regex = re.compile(r'^(.*?)[._\s-]+(?:[sS]\d+|[0-9]+[xX]\d+)', re.IGNORECASE)
+              # Step 4C: Detect series patterns
+              series_regex = re.compile(r'^(.*?)[._\s-]+(?:[sS]\d+|\d+[xX]\d+|season\s*\d+|ep?\d+)', re.IGNORECASE)
               series_groups = {}
-              loose_files = []
+              non_series_files = []
 
               for fpath in remaining_files:
                   fname = os.path.basename(fpath)
@@ -144,23 +161,33 @@ jobs:
                           series_groups[show_title] = []
                       series_groups[show_title].append(fpath)
                   else:
-                      loose_files.append(fpath)
+                      non_series_files.append(fpath)
+
+              # Step 4D: Process Series groups
+              small_series_files = []
+              small_series_titles = []
 
               for show_title, files in series_groups.items():
                   if len(files) > 3:
                       files.sort()
-                      first_file_stem = os.path.splitext(os.path.basename(files[0]))[0]
-                      zip_name = os.path.join(temp_dir, f"{first_file_stem}.zip")
-                      print(f"Series '{show_title}' has {len(files)} files (>3). Zipping into '{first_file_stem}.zip'...")
+                      zip_name = get_concise_zip_name([show_title], temp_dir)
+                      print(f"Series '{show_title}' has {len(files)} files (>3). Zipping into '{os.path.basename(zip_name)}'...")
                       zip_files(files, zip_name)
                       final_upload_files.append(zip_name)
-                      for f in files:
-                          if os.path.exists(f):
-                              os.remove(f)
                   else:
-                      final_upload_files.extend(files)
+                      print(f"Series '{show_title}' has {len(files)} file(s) (<=3). Adding to combined small-series bundle...")
+                      small_series_files.extend(files)
+                      small_series_titles.append(show_title)
 
-              final_upload_files.extend(loose_files)
+              # Zip all small series files (<=3 files each) together into a single concisely-named archive
+              if small_series_files:
+                  bundle_zip_name = get_concise_zip_name(small_series_titles, temp_dir)
+                  print(f"Zipping {len(small_series_files)} small series file(s) together into '{os.path.basename(bundle_zip_name)}'...")
+                  zip_files(small_series_files, bundle_zip_name)
+                  final_upload_files.append(bundle_zip_name)
+
+              # Process Non-Series files (uploaded normally unzipped)
+              final_upload_files.extend(non_series_files)
 
               # 5. Fetch Filemirage server and upload items
               print("\nFetching Filemirage server...")
@@ -185,17 +212,21 @@ jobs:
                   file_name = os.path.basename(file_path)
                   print(f"Uploading: {file_name}")
 
-                  with open(file_path, "rb") as f:
-                      res = requests.post(
-                          f"{server.rstrip('/')}/upload.php",
-                          headers=headers,
-                          files={"file": (file_name, f)},
-                      )
+                  try:
+                      with open(file_path, "rb") as f:
+                          res = requests.post(
+                              f"{server.rstrip('/')}/upload.php",
+                              headers=headers,
+                              files={"file": (file_name, f)},
+                          )
 
-                  if res.status_code == 200 and res.json().get("success"):
-                      print(f" -> Uploaded: {file_name}")
-                  else:
-                      print(f" -> Failed: {file_name} | {res.text}")
+                      if res.status_code == 200 and res.json().get("success"):
+                          print(f" -> Uploaded: {file_name}")
+                      else:
+                          print(f" -> Failed: {file_name} | {res.text}")
+                          has_failed = True
+                  except Exception as e:
+                      print(f" -> Error uploading {file_name}: {e}")
                       has_failed = True
 
               if has_failed:
