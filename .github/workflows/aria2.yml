@@ -3,7 +3,7 @@ name: Torrent Download & Smart Upload to Filemirage
 on:
   push:
     branches:
-      - '*'
+      - Aria2
   workflow_dispatch:
 
 jobs:
@@ -34,7 +34,7 @@ jobs:
           import urllib.request
           import requests
 
-          PAGE_URL = "https://equestria-eta.vercel.app/api/pages/dprjjMvC8fCF/raw"
+          PAGE_URL = "https://pink-script-snap.lovable.app/api/public/page/ce6c23ca-89a3-4ce6-afdd-1f13ea0655a5.txt"
           FILEMIRAGE_TOKEN = os.environ.get("FILEMIRAGE_API_TOKEN", "")
 
           def zip_directory(dir_path, zip_output_path):
