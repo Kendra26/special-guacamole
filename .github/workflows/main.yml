@@ -1,9 +1,9 @@
-name: Torrent Download & Smart Upload to Filemirage
+name: Torrent Download & Smart Upload to Filemirage (libtorrent)
 
 on:
   push:
     branches:
-      - '*'
+      - main
   workflow_dispatch:
 
 jobs:
@@ -175,16 +175,19 @@ jobs:
                       zip_files(files, zip_name)
                       final_upload_files.append(zip_name)
                   else:
-                      print(f"Series '{show_title}' has {len(files)} file(s) (<=3). Adding to combined small-series bundle...")
+                      print(f"Series '{show_title}' has {len(files)} file(s) (<=3). Collecting for potential zip bundle...")
                       small_series_files.extend(files)
                       small_series_titles.append(show_title)
 
-              # Zip all small series files (<=3 files each) together into a single concisely-named archive
-              if small_series_files:
+              # Zip small series files ONLY if total count across small series is >= 3
+              if len(small_series_files) >= 3:
                   bundle_zip_name = get_concise_zip_name(small_series_titles, temp_dir)
-                  print(f"Zipping {len(small_series_files)} small series file(s) together into '{os.path.basename(bundle_zip_name)}'...")
+                  print(f"Zipping {len(small_series_files)} small series file(s) (>=3 total) together into '{os.path.basename(bundle_zip_name)}'...")
                   zip_files(small_series_files, bundle_zip_name)
                   final_upload_files.append(bundle_zip_name)
+              elif small_series_files:
+                  print(f"Only {len(small_series_files)} small series file(s) (<3 total). Skipping zip, uploading as unzipped files.")
+                  final_upload_files.extend(small_series_files)
 
               # Process Non-Series files (uploaded normally unzipped)
               final_upload_files.extend(non_series_files)
