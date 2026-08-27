@@ -27,20 +27,45 @@ jobs:
           import re
           import sys
           import time
+          import shutil
           import zipfile
           import tempfile
           import subprocess
           import urllib.request
           import requests
-          from datetime import datetime
 
           PAGE_URL = "https://equestria-eta.vercel.app/api/pages/dprjjMvC8fCF/raw"
           FILEMIRAGE_TOKEN = os.environ.get("FILEMIRAGE_API_TOKEN", "")
+
+          def zip_directory(dir_path, zip_output_path):
+              with zipfile.ZipFile(zip_output_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                  for root, _, files in os.walk(dir_path):
+                      for file in files:
+                          full_path = os.path.join(root, file)
+                          arcname = os.path.relpath(full_path, dir_path)
+                          zipf.write(full_path, arcname)
 
           def zip_files(file_paths, zip_output_path):
               with zipfile.ZipFile(zip_output_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
                   for fpath in file_paths:
                       zipf.write(fpath, os.path.basename(fpath))
+
+          def get_concise_zip_name(show_titles, temp_dir, max_len=55):
+              clean_titles = []
+              for t in show_titles:
+                  c = re.sub(r'[^a-zA-Z0-9]+', '_', t).strip('_')
+                  if c and c not in clean_titles:
+                      clean_titles.append(c)
+              
+              combined = "_".join(clean_titles)
+              if len(combined) > max_len:
+                  if len(clean_titles) > 1:
+                      combined = f"{clean_titles[0][:25]}_and_{len(clean_titles)-1}_more"
+                  else:
+                      combined = clean_titles[0][:max_len]
+              if not combined:
+                  combined = "bundle"
+              return os.path.join(temp_dir, f"{combined}.zip")
 
           def main():
               # 1. Create temporary directory
@@ -87,17 +112,38 @@ jobs:
 
               print("\nAll downloads finished!")
 
-              # 4. Process files based on series detection and count rules
-              all_files = []
+              final_upload_files = []
+
+              # 4A. Check subdirectories for > 5 files
+              for item in os.listdir(temp_dir):
+                  full_path = os.path.join(temp_dir, item)
+                  if os.path.isdir(full_path):
+                      dir_files = []
+                      for root, _, files in os.walk(full_path):
+                          for f in files:
+                              dir_files.append(os.path.join(root, f))
+
+                      if len(dir_files) > 5:
+                          zip_name = os.path.join(temp_dir, f"{item}.zip")
+                          print(f"Subfolder '{item}' has {len(dir_files)} files (>5). Zipping into '{item}.zip'...")
+                          zip_directory(full_path, zip_name)
+                          final_upload_files.append(zip_name)
+                          shutil.rmtree(full_path)
+
+              # 4B. Collect remaining files
+              remaining_files = []
               for root, _, files in os.walk(temp_dir):
                   for f in files:
-                      all_files.append(os.path.join(root, f))
+                      fpath = os.path.join(root, f)
+                      if fpath not in final_upload_files:
+                          remaining_files.append(fpath)
 
+              # 4C. Detect series patterns
               series_regex = re.compile(r'^(.*?)[._\s-]+(?:[sS]\d+|\d+[xX]\d+|season\s*\d+|ep?\d+)', re.IGNORECASE)
               series_groups = {}
               non_series_files = []
 
-              for fpath in all_files:
+              for fpath in remaining_files:
                   fname = os.path.basename(fpath)
                   match = series_regex.match(fname)
                   if match:
@@ -108,36 +154,33 @@ jobs:
                   else:
                       non_series_files.append(fpath)
 
-              final_upload_files = []
+              # 4D. Process Series groups
               small_series_files = []
+              small_series_titles = []
 
-              # Process Series files
               for show_title, files in series_groups.items():
                   if len(files) > 3:
-                      # More than 3 files: Zip together into show-named zip
                       files.sort()
-                      first_file_stem = os.path.splitext(os.path.basename(files[0]))[0]
-                      zip_name = os.path.join(temp_dir, f"{first_file_stem}.zip")
-                      print(f"Series '{show_title}' has {len(files)} files (>3). Zipping into '{first_file_stem}.zip'...")
+                      zip_name = get_concise_zip_name([show_title], temp_dir)
+                      print(f"Series '{show_title}' has {len(files)} files (>3). Zipping into '{os.path.basename(zip_name)}'...")
                       zip_files(files, zip_name)
                       final_upload_files.append(zip_name)
                   else:
-                      # 3 or fewer files: Collect together to zip in a single timestamped archive
-                      print(f"Series '{show_title}' has {len(files)} file(s) (<=3). Adding to combined zip...")
+                      print(f"Series '{show_title}' has {len(files)} file(s) (<=3). Adding to combined small-series bundle...")
                       small_series_files.extend(files)
+                      small_series_titles.append(show_title)
 
-              # Bundle all <=3 series files across all shows into ONE timestamped zip
+              # Zip all small series files (<=3 files each) together into a single concisely-named archive
               if small_series_files:
-                  timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                  combined_zip_name = os.path.join(temp_dir, f"{timestamp}.zip")
-                  print(f"Zipping {len(small_series_files)} ungrouped series file(s) into single archive '{timestamp}.zip'...")
-                  zip_files(small_series_files, combined_zip_name)
-                  final_upload_files.append(combined_zip_name)
+                  bundle_zip_name = get_concise_zip_name(small_series_titles, temp_dir)
+                  print(f"Zipping {len(small_series_files)} small series file(s) together into '{os.path.basename(bundle_zip_name)}'...")
+                  zip_files(small_series_files, bundle_zip_name)
+                  final_upload_files.append(bundle_zip_name)
 
-              # Process Non-Series files (uploaded normally unzipped)
+              # Non-series files remain unzipped as standalone uploads
               final_upload_files.extend(non_series_files)
 
-              # 5. Fetch Filemirage server and upload items
+              # 5. Fetch Filemirage server and upload
               print("\nFetching Filemirage server...")
               try:
                   srv_resp = requests.get("https://filemirage.com/api/servers").json()
